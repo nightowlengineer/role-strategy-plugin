@@ -4,6 +4,8 @@ import com.cloudbees.hudson.plugins.folder.Folder;
 import com.michelin.cio.hudson.plugins.rolestrategy.Role;
 import com.michelin.cio.hudson.plugins.rolestrategy.RoleBasedAuthorizationStrategy;
 import hudson.model.*;
+import hudson.security.ACL;
+import hudson.security.ACLContext;
 import hudson.security.AuthorizationStrategy;
 import io.jenkins.plugins.casc.ConfigurationContext;
 import io.jenkins.plugins.casc.Configurator;
@@ -13,17 +15,11 @@ import io.jenkins.plugins.casc.misc.JenkinsConfiguredWithCodeRule;
 import io.jenkins.plugins.casc.model.CNode;
 import jenkins.model.Jenkins;
 import jenkins.model.ProjectNamingStrategy;
-import net.sf.json.JSONObject;
 import org.jenkinsci.plugins.rolestrategy.casc.RoleBasedAuthorizationStrategyConfigurator;
-import org.jenkinsci.plugins.rolestrategy.util.TemporaryUserSession;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.runner.RunWith;
 import org.jvnet.hudson.test.Issue;
-import org.kohsuke.stapler.StaplerRequest;
-import org.kohsuke.stapler.StaplerResponse;
-import org.mockito.junit.MockitoJUnitRunner;
 
 import java.util.Map;
 import java.util.Set;
@@ -35,14 +31,11 @@ import static org.hamcrest.core.Is.is;
 import static org.jenkinsci.plugins.rolestrategy.PermissionAssert.assertHasNoPermission;
 import static org.jenkinsci.plugins.rolestrategy.PermissionAssert.assertHasPermission;
 import static org.junit.Assert.*;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * @author Oleg Nenashev
  * @since 2.11
  */
-@RunWith(MockitoJUnitRunner.class)
 public class RoleStrategyTest {
 
     @Rule
@@ -147,11 +140,11 @@ public class RoleStrategyTest {
     @Issue("JENKINS-34337")
     @ConfiguredWithCode("Configuration-as-Code-With-Name-Strategy.yml")
     public void nameStrategyShouldHandleValidCreate() throws Exception {
-        ProjectNamingStrategy s = j.jenkins.getProjectNamingStrategy();
+        final ProjectNamingStrategy s = j.jenkins.getProjectNamingStrategy();
         assertThat("Project Naming Strategy has been read incorrectly",
                 s, instanceOf(RoleBasedProjectNamingStrategy.class));
 
-        try(final TemporaryUserSession user = new TemporaryUserSession("user3")) {
+        try(final ACLContext ctx = ACL.as(User.getById("user3", true))) {
             // Create a new job with the specified prefix (34337_.*)
             j.jenkins.createProject(FreeStyleProject.class, "34337_job");
         }
@@ -161,15 +154,15 @@ public class RoleStrategyTest {
     @Issue("JENKINS-34337")
     @ConfiguredWithCode("Configuration-as-Code-With-Name-Strategy.yml")
     public void nameStrategyShouldFailWithInvalidCreate() throws Exception {
-        ProjectNamingStrategy s = j.jenkins.getProjectNamingStrategy();
+        final ProjectNamingStrategy s = j.jenkins.getProjectNamingStrategy();
         assertThat("Authorization Strategy has been read incorrectly",
                 s, instanceOf(RoleBasedProjectNamingStrategy.class));
 
         // Create a new job with the specified prefix (34337_.*)
-        try(final TemporaryUserSession user = new TemporaryUserSession("user3")) {
+        try(final ACLContext ctx = ACL.as(User.getById("user3", true))) {
             j.jenkins.createProject(FreeStyleProject.class, "invalid_name");
         }
-        catch (Failure f)
+        catch (final Failure f)
         {
             if (!f.getMessage().contains("does not match the job name convention pattern"))
             {
@@ -184,17 +177,13 @@ public class RoleStrategyTest {
     @Issue("JENKINS-34337")
     @ConfiguredWithCode("Configuration-as-Code-With-Name-Strategy.yml")
     public void nameStrategyShouldAcceptValidRename() throws Exception {
-        ProjectNamingStrategy s = j.jenkins.getProjectNamingStrategy();
+        final ProjectNamingStrategy s = j.jenkins.getProjectNamingStrategy();
         assertThat("Authorization Strategy has been read incorrectly",
                 s, instanceOf(RoleBasedProjectNamingStrategy.class));
 
-        try(final TemporaryUserSession user = new TemporaryUserSession("user3")) {
-            FreeStyleProject job = j.jenkins.createProject(FreeStyleProject.class, "34337_job_to_rename_existing");
-            StaplerRequest staplerRequest = mock(StaplerRequest.class);
-            StaplerResponse staplerResponse = mock(StaplerResponse.class);
-            when(staplerRequest.getParameter("name")).thenReturn("34337_job_to_rename_new");
-            when(staplerRequest.getSubmittedForm()).thenReturn(new JSONObject());
-            job.doConfigSubmit(staplerRequest, staplerResponse);
+        try(final ACLContext ctx = ACL.as(User.getById("user3", true))) {
+            final FreeStyleProject job = j.jenkins.createProject(FreeStyleProject.class, "34337_job_to_rename_existing");
+            job.doConfirmRename("34337_job_to_rename_new");
         }
     }
 
@@ -202,20 +191,16 @@ public class RoleStrategyTest {
     @Issue("JENKINS-34337")
     @ConfiguredWithCode("Configuration-as-Code-With-Name-Strategy.yml")
     public void nameStrategyShouldFailInvalidRename() throws Exception {
-        ProjectNamingStrategy s = j.jenkins.getProjectNamingStrategy();
+        final ProjectNamingStrategy s = j.jenkins.getProjectNamingStrategy();
         assertThat("Authorization Strategy has been read incorrectly",
                 s, instanceOf(RoleBasedProjectNamingStrategy.class));
 
-        try(final TemporaryUserSession user = new TemporaryUserSession("user3")) {
+        try(final ACLContext ctx = ACL.as(User.getById("user3", true))) {
             // Create a new job with the specified prefix (34337_.*)
-            FreeStyleProject job = j.jenkins.createProject(FreeStyleProject.class, "34337_job_to_rename_existing");
-            StaplerRequest staplerRequest = mock(StaplerRequest.class);
-            StaplerResponse staplerResponse = mock(StaplerResponse .class);
-            when(staplerRequest.getParameter("name")).thenReturn("invalid_name");
-            when(staplerRequest.getSubmittedForm()).thenReturn(new JSONObject());
-            job.doConfigSubmit(staplerRequest, staplerResponse);
+            final FreeStyleProject job = j.jenkins.createProject(FreeStyleProject.class, "34337_job_to_rename_existing");
+            job.doConfirmRename("invalid_name");
         }
-        catch (Failure f)
+        catch (final Failure f)
         {
             if (!f.getMessage().contains("does not match the job name convention pattern"))
             {
