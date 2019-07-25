@@ -3,10 +3,7 @@ package org.jenkinsci.plugins.rolestrategy;
 import com.cloudbees.hudson.plugins.folder.Folder;
 import com.michelin.cio.hudson.plugins.rolestrategy.Role;
 import com.michelin.cio.hudson.plugins.rolestrategy.RoleBasedAuthorizationStrategy;
-import hudson.model.Computer;
-import hudson.model.FreeStyleProject;
-import hudson.model.Item;
-import hudson.model.User;
+import hudson.model.*;
 import hudson.security.AuthorizationStrategy;
 import io.jenkins.plugins.casc.ConfigurationContext;
 import io.jenkins.plugins.casc.Configurator;
@@ -14,34 +11,48 @@ import io.jenkins.plugins.casc.ConfiguratorRegistry;
 import io.jenkins.plugins.casc.misc.ConfiguredWithCode;
 import io.jenkins.plugins.casc.misc.JenkinsConfiguredWithCodeRule;
 import io.jenkins.plugins.casc.model.CNode;
-import java.util.Map;
-import java.util.Set;
 import jenkins.model.Jenkins;
+import jenkins.model.ProjectNamingStrategy;
+import net.sf.json.JSONObject;
 import org.jenkinsci.plugins.rolestrategy.casc.RoleBasedAuthorizationStrategyConfigurator;
+import org.jenkinsci.plugins.rolestrategy.util.TemporaryUserSession;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 import org.jvnet.hudson.test.Issue;
+import org.kohsuke.stapler.StaplerRequest;
+import org.kohsuke.stapler.StaplerResponse;
+import org.mockito.junit.MockitoJUnitRunner;
 
-import static io.jenkins.plugins.casc.misc.Util.getJenkinsRoot;
-import static io.jenkins.plugins.casc.misc.Util.toStringFromYamlFile;
-import static io.jenkins.plugins.casc.misc.Util.toYamlString;
+import java.util.Map;
+import java.util.Set;
+
+import static io.jenkins.plugins.casc.misc.Util.*;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.core.Is.is;
 import static org.jenkinsci.plugins.rolestrategy.PermissionAssert.assertHasNoPermission;
 import static org.jenkinsci.plugins.rolestrategy.PermissionAssert.assertHasPermission;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThat;
+import static org.junit.Assert.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * @author Oleg Nenashev
  * @since 2.11
  */
+@RunWith(MockitoJUnitRunner.class)
 public class RoleStrategyTest {
 
     @Rule
     public JenkinsConfiguredWithCodeRule j = new JenkinsConfiguredWithCodeRule();
+
+    @Before
+    public void setup()
+    {
+        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
+    }
 
     @Test
     public void shouldReturnCustomConfigurator() {
@@ -55,7 +66,6 @@ public class RoleStrategyTest {
     @Issue("Issue #48")
     @ConfiguredWithCode("Configuration-as-Code.yml")
     public void shouldReadRolesCorrectly() throws Exception {
-        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
         User admin = User.getById("admin", false);
         User user1 = User.getById("user1", false);
         User user2 = User.getById("user2", true);
@@ -131,5 +141,87 @@ public class RoleStrategyTest {
 
         Map<Role, Set<String>> globalRoles = rbas.getGrantedRoles(RoleBasedAuthorizationStrategy.GLOBAL);
         assertThat(globalRoles.size(), equalTo(2));
+    }
+
+    @Test
+    @Issue("JENKINS-34337")
+    @ConfiguredWithCode("Configuration-as-Code-With-Name-Strategy.yml")
+    public void nameStrategyShouldHandleValidCreate() throws Exception {
+        ProjectNamingStrategy s = j.jenkins.getProjectNamingStrategy();
+        assertThat("Project Naming Strategy has been read incorrectly",
+                s, instanceOf(RoleBasedProjectNamingStrategy.class));
+
+        try(final TemporaryUserSession user = new TemporaryUserSession("user3")) {
+            // Create a new job with the specified prefix (34337_.*)
+            j.jenkins.createProject(FreeStyleProject.class, "34337_job");
+        }
+    }
+
+    @Test(expected = Failure.class)
+    @Issue("JENKINS-34337")
+    @ConfiguredWithCode("Configuration-as-Code-With-Name-Strategy.yml")
+    public void nameStrategyShouldFailWithInvalidCreate() throws Exception {
+        ProjectNamingStrategy s = j.jenkins.getProjectNamingStrategy();
+        assertThat("Authorization Strategy has been read incorrectly",
+                s, instanceOf(RoleBasedProjectNamingStrategy.class));
+
+        // Create a new job with the specified prefix (34337_.*)
+        try(final TemporaryUserSession user = new TemporaryUserSession("user3")) {
+            j.jenkins.createProject(FreeStyleProject.class, "invalid_name");
+        }
+        catch (Failure f)
+        {
+            if (!f.getMessage().contains("does not match the job name convention pattern"))
+            {
+                fail("Unexpected failure occurred when testing create: " + f.getMessage());
+            }
+            throw f;
+        }
+
+    }
+
+    @Test
+    @Issue("JENKINS-34337")
+    @ConfiguredWithCode("Configuration-as-Code-With-Name-Strategy.yml")
+    public void nameStrategyShouldAcceptValidRename() throws Exception {
+        ProjectNamingStrategy s = j.jenkins.getProjectNamingStrategy();
+        assertThat("Authorization Strategy has been read incorrectly",
+                s, instanceOf(RoleBasedProjectNamingStrategy.class));
+
+        try(final TemporaryUserSession user = new TemporaryUserSession("user3")) {
+            FreeStyleProject job = j.jenkins.createProject(FreeStyleProject.class, "34337_job_to_rename_existing");
+            StaplerRequest staplerRequest = mock(StaplerRequest.class);
+            StaplerResponse staplerResponse = mock(StaplerResponse.class);
+            when(staplerRequest.getParameter("name")).thenReturn("34337_job_to_rename_new");
+            when(staplerRequest.getSubmittedForm()).thenReturn(new JSONObject());
+            job.doConfigSubmit(staplerRequest, staplerResponse);
+        }
+    }
+
+    @Test(expected = Failure.class)
+    @Issue("JENKINS-34337")
+    @ConfiguredWithCode("Configuration-as-Code-With-Name-Strategy.yml")
+    public void nameStrategyShouldFailInvalidRename() throws Exception {
+        ProjectNamingStrategy s = j.jenkins.getProjectNamingStrategy();
+        assertThat("Authorization Strategy has been read incorrectly",
+                s, instanceOf(RoleBasedProjectNamingStrategy.class));
+
+        try(final TemporaryUserSession user = new TemporaryUserSession("user3")) {
+            // Create a new job with the specified prefix (34337_.*)
+            FreeStyleProject job = j.jenkins.createProject(FreeStyleProject.class, "34337_job_to_rename_existing");
+            StaplerRequest staplerRequest = mock(StaplerRequest.class);
+            StaplerResponse staplerResponse = mock(StaplerResponse .class);
+            when(staplerRequest.getParameter("name")).thenReturn("invalid_name");
+            when(staplerRequest.getSubmittedForm()).thenReturn(new JSONObject());
+            job.doConfigSubmit(staplerRequest, staplerResponse);
+        }
+        catch (Failure f)
+        {
+            if (!f.getMessage().contains("does not match the job name convention pattern"))
+            {
+                fail("Unexpected failure occurred when testing rename: " + f.getMessage());
+            }
+            throw f;
+        }
     }
 }
